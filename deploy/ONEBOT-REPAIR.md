@@ -16,8 +16,9 @@ Deployment. Preserve volumes, environment, probes, service and node placement.
 Record the old image before updating, wait for rollout readiness, then verify
 OneBot connection, MCP tools, and a QQ mention/reply round trip.
 
-The upstream Docker workflow is restricted to AstrBotDevs/AstrBot; this repository
-currently does not provide automatic K3s deployment. A locally imported patch image
+The upstream Docker workflow is restricted to AstrBotDevs/AstrBot. The Rinrin
+release workflow is documented in [k3s/README.md](k3s/README.md); once its deployment
+credentials are configured, use it for full application releases. A locally imported patch image
 must remain on its target node and use `imagePullPolicy: IfNotPresent`. For rollout
 to another node, publish/import that exact image there first. Roll back by restoring
 the previous digest-pinned image; no database migration is involved.

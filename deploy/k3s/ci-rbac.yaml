@@ -1,0 +1,34 @@
+# Bootstrap once with a cluster administrator; never apply from release CI.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rinrin-ci-deployer
+  namespace: rinrin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rinrin-ci-deployer
+  namespace: rinrin
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [astrbot]
+    verbs: [get, watch, patch]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rinrin-ci-deployer
+  namespace: rinrin
+subjects:
+  - kind: ServiceAccount
+    name: rinrin-ci-deployer
+    namespace: rinrin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rinrin-ci-deployer

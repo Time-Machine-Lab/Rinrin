@@ -1,0 +1,132 @@
+name: Rinrin Release to K3s
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag on master (v4.29.4-rinrin.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rinrin-production-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'Time-Machine-Lab/Rinrin' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') || (github.event_name == 'release' && github.event.release.prerelease == false))
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and configuration
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for key in KUBE_CONFIG DOCKER_USERNAME DOCKER_PASSWORD; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "::error::Missing secret: $key"
+              exit 1
+            fi
+          done
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+          [[ "$DOCKER_USERNAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
+          sha=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$sha" origin/master
+          git checkout --detach "$sha"
+          # Per-run tags cannot overwrite a previous release on retry.
+          image="$DOCKER_USERNAME/rinrin:$RELEASE_TAG-${sha:0:12}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf 'sha=%s\nimage=%s\n' "$sha" "$image" >> "$GITHUB_OUTPUT"
+          install -m 700 -d "$RUNNER_TEMP/rinrin-kube"
+          printf '%s\n' "$KUBE_CONFIG" > "$RUNNER_TEMP/rinrin-kube/config"
+          chmod 600 "$RUNNER_TEMP/rinrin-kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/rinrin-kube/config" >> "$GITHUB_ENV"
+
+      - name: Verify cluster access before building
+        run: |
+          set -euo pipefail
+          kubectl --request-timeout=20s -n rinrin get deployment astrbot -o name
+          test "$(kubectl -n rinrin auth can-i patch deployment/astrbot)" = yes
+          test "$(kubectl -n rinrin auth can-i watch deployment/astrbot)" = yes
+
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 10.28.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.13.0'
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Build dashboard
+        run: |
+          set -euo pipefail
+          pnpm --dir dashboard install --frozen-lockfile
+          pnpm --dir dashboard run build
+          mkdir -p astrbot/dashboard
+          cp -r dashboard/dist astrbot/dashboard/dist
+
+      - uses: docker/setup-buildx-action@v4.4.1
+      - name: Build full application image
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.release.outputs.image }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Time-Machine-Lab/Rinrin
+          cache-from: type=gha,scope=rinrin
+          cache-to: type=gha,mode=max,scope=rinrin
+
+      - name: Test built image
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh -e TESTING=true \
+            -v "$PWD/tests:/tests:ro" "$IMAGE" -c \
+            'python -m pytest /tests/unit/test_aiocqhttp_reconnect.py /tests/unit/test_aiocqhttp_group_info.py /tests/unit/test_aiocqhttp_reply.py -q -p no:cacheprovider'
+
+      - uses: docker/login-action@v4.7.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Publish image
+        id: publish
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE"
+          ref=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
+          [[ "$ref" =~ @sha256:[a-f0-9]{64}$ ]]
+          echo "image=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy and verify
+        env:
+          IMAGE: ${{ steps.publish.outputs.image }}
+        run: bash deploy/k3s/release.sh
+
+      - name: Remove temporary cluster credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rinrin-kube/config"
