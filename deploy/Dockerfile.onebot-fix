@@ -1,0 +1,4 @@
+# Keep this repair on the exact upstream image currently deployed in rinrin.
+FROM soulter/astrbot@sha256:72f341f0ffcf6621ef820277642c5d63955f7beeac3683433ce09cac96379c78
+COPY astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py /AstrBot/astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py
+COPY astrbot/core/platform/sources/aiocqhttp/client.py /AstrBot/astrbot/core/platform/sources/aiocqhttp/client.py

@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Awaitable
 from typing import Any, cast
 
-from aiocqhttp import CQHttp, Event
+from aiocqhttp import Event
 from aiocqhttp.exceptions import ActionFailed
 
 from astrbot.api import logger
@@ -25,6 +25,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from ...register import register_platform_adapter
 from .aiocqhttp_message_event import *
 from .aiocqhttp_message_event import AiocqhttpMessageEvent
+from .client import ReconnectSafeCQHttp
 
 
 @register_platform_adapter(
@@ -52,7 +53,7 @@ class AiocqhttpAdapter(Platform):
             support_streaming_message=False,
         )
 
-        self.bot = CQHttp(
+        self.bot = ReconnectSafeCQHttp(
             use_ws_reverse=True,
             import_name="aiocqhttp",
             api_timeout_sec=180,
@@ -347,52 +348,58 @@ class AiocqhttpAdapter(Platform):
                 at_parts = []
 
                 for m in m_group:
-                    try:
-                        if m["data"]["qq"] == "all":
-                            abm.message.append(At(qq="all", name="全体成员"))
-                            continue
+                    qq = str(m["data"]["qq"])
+                    if qq == "all":
+                        abm.message.append(At(qq="all", name="全体成员"))
+                        continue
 
-                        at_info = await self.bot.call_action(
-                            action="get_group_member_info",
-                            group_id=event.group_id,
-                            user_id=int(m["data"]["qq"]),
-                            no_cache=False,
-                            **routing_params,
-                        )
-                        if at_info:
-                            nickname = at_info.get("card", "")
-                            if nickname == "":
-                                at_info = await self.bot.call_action(
-                                    action="get_stranger_info",
-                                    user_id=int(m["data"]["qq"]),
+                    nickname = ""
+                    is_at_self = qq == abm.self_id
+                    # A bot mention needs no nickname lookup to trigger a reply.
+                    if not is_at_self:
+                        try:
+                            at_info = await asyncio.wait_for(
+                                self.bot.call_action(
+                                    action="get_group_member_info",
+                                    group_id=event.group_id,
+                                    user_id=int(qq),
                                     no_cache=False,
                                     **routing_params,
-                                )
-                                nickname = at_info.get("nick", "") or at_info.get(
-                                    "nickname",
-                                    "",
-                                )
-                            is_at_self = str(m["data"]["qq"]) in {abm.self_id, "all"}
-
-                            abm.message.append(
-                                At(
-                                    qq=m["data"]["qq"],
-                                    name=nickname,
                                 ),
+                                timeout=5,
+                            )
+                            if at_info:
+                                nickname = at_info.get("card", "") or at_info.get(
+                                    "nickname", ""
+                                )
+                                if not nickname:
+                                    at_info = await asyncio.wait_for(
+                                        self.bot.call_action(
+                                            action="get_stranger_info",
+                                            user_id=int(qq),
+                                            no_cache=False,
+                                            **routing_params,
+                                        ),
+                                        timeout=5,
+                                    )
+                                    if at_info:
+                                        nickname = at_info.get(
+                                            "nick", ""
+                                        ) or at_info.get("nickname", "")
+                        except Exception as e:
+                            logger.warning(
+                                "Mention nickname lookup failed for %s (%s: %s); "
+                                "preserving the mention.",
+                                qq,
+                                type(e).__name__,
+                                e,
                             )
 
-                            if is_at_self and not first_at_self_processed:
-                                # 第一个@是机器人，不添加到message_str
-                                first_at_self_processed = True
-                            else:
-                                # 非第一个@机器人或@其他用户，添加到message_str
-                                at_parts.append(f" @{nickname}({m['data']['qq']}) ")
-                        else:
-                            abm.message.append(At(qq=str(m["data"]["qq"]), name=""))
-                    except ActionFailed as e:
-                        logger.error(f"获取 @ 用户信息失败: {e}，此消息段将被忽略。")
-                    except BaseException as e:
-                        logger.error(f"获取 @ 用户信息失败: {e}，此消息段将被忽略。")
+                    abm.message.append(At(qq=qq, name=nickname))
+                    if is_at_self and not first_at_self_processed:
+                        first_at_self_processed = True
+                    else:
+                        at_parts.append(f" @{nickname}({qq}) ")
 
                 message_str += "".join(at_parts)
             elif t == "mface":
