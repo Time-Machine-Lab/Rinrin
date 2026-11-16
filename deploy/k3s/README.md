@@ -2,7 +2,7 @@
 
 `Rinrin Release to K3s` builds the full source and dashboard from an existing tag,
 tests the image, publishes it to Docker Hub, then updates only container `astrbot`
-in Deployment `rinrin/astrbot` on `https://k3s.tmlab.top`.
+in Deployment `rinrin/astrbot` on `https://k3s.tmlab.top:6443`.
 It replaces the node-local OneBot patch image; every release includes committed
 backend changes, not just the two hotfix files.
 
@@ -15,7 +15,7 @@ backend changes, not just the two hotfix files.
    still permits running replacement application code with that workload's access;
    protect production releases and the repository accordingly.
 2. Issue a kubeconfig for `rinrin/rinrin-ci-deployer` with the cluster CA and API
-   endpoint `https://k3s.tmlab.top`. Store the raw YAML (not base64) in the repository
+   endpoint `https://k3s.tmlab.top:6443`. Store the raw YAML (not base64) in the repository
    or `production` environment secret `KUBE_CONFIG`. Use the team's credential
    issuance/rotation process; expiring tokens must be renewed before expiry.
    Do not reuse Plane's namespace-scoped kubeconfig or a cluster-admin kubeconfig.
@@ -71,3 +71,4 @@ bash -n deploy/k3s/release.sh
 bash deploy/k3s/test-release.sh
 actionlint .github/workflows/rinrin-release-k3s.yml
 ```
+
